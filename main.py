@@ -43,6 +43,11 @@ class FeedbackRequest(BaseModel):
     message_idx: int
     feedback: str
 
+class AuthProfileRequest(BaseModel):
+    uid: str
+    email: str
+    display_name: str
+
 # Logic Imports
 from graph import get_app, route_query
 
@@ -87,6 +92,14 @@ async def generate_title_api(req: TitleRequest):
     model_to_use = req.model if req.model else "gpt-4o"
     resp = await route_query(model_to_use, sys_prompt, req.prompt)
     return {"status": "success", "title": resp.response}
+
+@app.post("/api/auth/profile")
+async def auth_profile_api(req: AuthProfileRequest):
+    from db import create_or_update_user
+    user_data = await create_or_update_user(req.uid, req.email, req.display_name)
+    if "_id" in user_data:
+        user_data["_id"] = str(user_data["_id"])
+    return {"status": "success", "user": user_data}
 
 @app.get("/api/chats/{uid}")
 async def get_chats_api(uid: str):
