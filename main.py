@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="AI Parliament Backend")
+app = FastAPI(title="Council X Backend")
 
 app.add_middleware(
     CORSMiddleware,
