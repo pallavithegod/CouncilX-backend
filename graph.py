@@ -33,6 +33,7 @@ class GraphState(TypedDict):
     iterations: int
     feedback: str
     needs_reconsideration: bool
+    confidence: int  # 0-100 scale
 
 async def route_query(model_id: str, persona: str, user_content: str, history: List[Dict[str, str]] = []) -> ModelResponse:
     try:
@@ -85,13 +86,28 @@ async def layer3_node(state: GraphState):
     print("--- Executing Layer 3 ---")
     print(f"DEBUG: Layer 3 State Keys -> {list(state.keys())}")
     l2_resp = state.get('l2_response')
-    refinement_context = f"**User Question:** {state.get('question', '')}\n\n**1st Speaker Synthesis:**\n{l2_resp.response if l2_resp else ''}\n\nPerform a forensic audit on this synthesis. If it contains even trace amounts of bias, subjective adjectives, or leading logic, output 'RECONSIDER' followed by the fix. Else, refine it further."
+    refinement_context = f"**User Question:** {state.get('question', '')}\n\n**1st Speaker Synthesis:**\n{l2_resp.response if l2_resp else ''}\n\nPerform a forensic audit on this synthesis. Evaluate its logical integrity, factual depth, and neutrality. \n\n1. Assign a 'CONFIDENCE_SCORE' between 0 and 100.\n2. If the confidence is less than 50, provide specific critical feedback and start with 'RECONSIDER'.\n3. If confidence is 50 or higher, refine the synthesis slightly if needed but do not trigger a rebuild.\n\nFORMAT: [CONFIDENCE_SCORE: X] followed by your audit."
     
-    sys_prompt = f"You are {state.get('model_l3', 'Auditor').capitalize()}, the 2nd Speaker Auditor. You are an adversarial firewall against bias. Your only goal is to find flaws in the synthesis. BE CONCISE. State specifically why elements are biased or logically flawed."
+    sys_prompt = f"You are {state.get('model_l3', 'Auditor').capitalize()}, the 2nd Speaker Auditor. You are an adversarial firewall against bias. Your mandate is to ensure the synthesis is ready for the Final Arbiter. BE CONCISE."
     l3_resp = await route_query(state.get('model_l3', 'gpt-4o'), sys_prompt, refinement_context, state.get('history', []))
     
-    needs_reconsideration = "RECONSIDER" in l3_resp.response.upper() and state['iterations'] < 3
-    return {"l3_response": l3_resp, "needs_reconsideration": needs_reconsideration, "feedback": l3_resp.response if needs_reconsideration else ""}
+    # Extract confidence score
+    confidence = 100
+    try:
+        import re
+        match = re.search(r"CONFIDENCE_SCORE:\s*(\d+)", l3_resp.response.upper())
+        if match:
+            confidence = int(match.group(1))
+    except:
+        pass
+
+    needs_reconsideration = confidence < 50 and state['iterations'] < 3
+    return {
+        "l3_response": l3_resp, 
+        "needs_reconsideration": needs_reconsideration, 
+        "feedback": l3_resp.response if needs_reconsideration else "",
+        "confidence": confidence
+    }
 
 def should_reconsider(state: GraphState):
     if state["needs_reconsideration"]:
