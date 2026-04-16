@@ -53,7 +53,7 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
         response = await azure_client.chat.completions.create(
             model=deployment_name,
             messages=messages,
-            max_completion_tokens=800,
+            max_completion_tokens=4000,
             temperature=0.7,
         )
         response_text = response.choices[0].message.content or ""
