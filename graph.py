@@ -64,7 +64,7 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
                 bias = float(match.group(1))
                 neutral = float(match.group(2))
                 clarity = float(match.group(3))
-                response_text = response_text[:match.start()].strip()
+                response_text = response_text.replace(match.group(0), "").strip()
                 
         return ModelResponse(
             model_id=model_id, 
@@ -87,7 +87,7 @@ async def layer1_node(state: GraphState):
     feedback_context = f"\n\nPre-existing feedback to consider: {state.get('feedback', '')}" if state.get('feedback') else ""
     models = state.get('models_l1') or []
     for m in models:
-        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Your mandate is absolute objectivity. You must analyze the user inquiry through a purely factual, non-partisan lens. BE CONCISE. Provide your response followed by the core logical reasons for your stance."
+        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Your mandate is absolute objectivity. You must analyze the user inquiry through a purely factual, non-partisan lens. Provide a detailed and comprehensive analysis followed by the core logical reasons for your stance."
         tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', []), extract_scores=True))
     l1_resp = await asyncio.gather(*tasks)
     return {"l1_responses": l1_resp, "iterations": state.get("iterations", 0) + 1}
@@ -102,11 +102,11 @@ async def layer2_node(state: GraphState):
     if state.get("feedback"):
         aggregation_context += f"**Previous Critique/Feedback:** {state['feedback']}\n\n"
 
-    aggregation_context += "Your task is to review these perspectives and provide a final, neutral, and unbiased answer. You MUST also provide your self-assessment scores."
+    aggregation_context += "Your task is to review these perspectives and provide a detailed, comprehensive, and perfectly neutral final answer that synthesizes all valid points. You MUST also provide your self-assessment scores."
     
     sys_prompt = (
         f"You are {state['model_l2'].capitalize()}, the Final Arbiter. "
-        "Review the Tier 1 deliberations and synthesize a perfectly neutral response. "
+        "Review the Tier 1 deliberations and synthesize a detailed, exhaustive, and neutral response. "
         "At the end, provide your scores in this format: [SCORES: bias=0.1, neutrality=0.9, confidence=0.85, feedback=NONE]"
         "\nIf you feel the Tier 1 models missed something or were biased, specify it in 'feedback' and set confidence low."
     )
@@ -135,7 +135,7 @@ async def layer2_node(state: GraphState):
             neutral = float(match.group(2))
             confidence = float(match.group(3))
             feedback = match.group(4).strip()
-            response_text = response_text[:match.start()].strip()
+            response_text = response_text.replace(match.group(0), "").strip()
         
         # Decide if reconsideration is needed
         # Condition: iterations < 2 AND (bias > 0.6 OR confidence < 0.7)
