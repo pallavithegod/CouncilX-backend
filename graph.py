@@ -31,8 +31,6 @@ class GraphState(TypedDict):
     model_l4: str
     l1_responses: List[ModelResponse]
     l2_response: Optional[ModelResponse]
-    l3_response: Optional[ModelResponse]
-    l4_response: Optional[ModelResponse]
     iterations: int
     feedback: str
     needs_reconsideration: bool
@@ -109,67 +107,13 @@ async def layer2_node(state: GraphState):
     l2_resp = await route_query(state['model_l2'], sys_prompt, aggregation_context, state.get('history', []))
     return {"l2_response": l2_resp}
 
-async def layer3_node(state: GraphState):
-    print("--- Executing Layer 3 ---")
-    print(f"DEBUG: Layer 3 State Keys -> {list(state.keys())}")
-    l2_resp = state.get('l2_response')
-    refinement_context = f"**User Question:** {state.get('question', '')}\n\n**1st Speaker Synthesis:**\n{l2_resp.response if l2_resp else ''}\n\nPerform a forensic audit on this synthesis. Evaluate its logical integrity, factual depth, and neutrality. \n\n1. Assign a 'CONFIDENCE_SCORE' between 0 and 100.\n2. If the confidence is less than 50, provide specific critical feedback and start with 'RECONSIDER'.\n3. If confidence is 50 or higher, refine the synthesis slightly if needed but do not trigger a rebuild.\n\nFORMAT: [CONFIDENCE_SCORE: X] followed by your audit."
-    
-    sys_prompt = f"You are {state.get('model_l3', 'Auditor').capitalize()}, the 2nd Speaker Auditor. You are an adversarial firewall against bias. Your mandate is to ensure the synthesis is ready for the Final Arbiter. BE CONCISE."
-    l3_resp = await route_query(state.get('model_l3', 'gpt-4o'), sys_prompt, refinement_context, state.get('history', []))
-    
-    # Extract confidence score
-    confidence = 100
-    try:
-        import re
-        match = re.search(r"CONFIDENCE_SCORE:\s*(\d+)", l3_resp.response.upper())
-        if match:
-            confidence = int(match.group(1))
-    except:
-        pass
-
-    needs_reconsideration = confidence < 50 and state['iterations'] < 3
-    return {
-        "l3_response": l3_resp, 
-        "needs_reconsideration": needs_reconsideration, 
-        "feedback": l3_resp.response if needs_reconsideration else "",
-        "confidence": confidence
-    }
-
-def should_reconsider(state: GraphState):
-    if state["needs_reconsideration"]:
-        print(f">>> Auditor triggered RECONSIDERATION loop! (Iteration {state['iterations']}/3). Returning to Phase 1.")
-        return "layer1_node"
-    return "layer4_node"
-
-async def layer4_node(state: GraphState):
-    print("--- Executing Layer 4 ---")
-    print(f"DEBUG: Layer 4 State Keys -> {list(state.keys())}")
-    l3_resp = state.get('l3_response')
-    final_context = f"**User Question:** {state.get('question', '')}\n\n**Auditor's Checked Review:**\n{l3_resp.response if l3_resp else ''}\n\nConstruct the final, universally objective verdict."
-    
-    sys_prompt = f"You are {state.get('model_l4', 'Arbiter').capitalize()}, the Final Arbiter. Your mandate is to provide the absolute, objective final answer to the user. DO NOT mention previous layers, deliberation steps, or technical reasons. Provide ONLY the direct, helpful, and distilled final response as a normal AI assistant would. Maintain extreme neutrality and factual accuracy."
-    l4_resp = await route_query(state.get('model_l4', 'gpt-4o'), sys_prompt, final_context, state.get('history', []))
-    return {"l4_response": l4_resp}
-
 workflow = StateGraph(GraphState)
 workflow.add_node("layer1_node", layer1_node)
 workflow.add_node("layer2_node", layer2_node)
-workflow.add_node("layer3_node", layer3_node)
-workflow.add_node("layer4_node", layer4_node)
 
 workflow.set_entry_point("layer1_node")
 workflow.add_edge("layer1_node", "layer2_node")
-workflow.add_edge("layer2_node", "layer3_node")
-workflow.add_conditional_edges(
-    "layer3_node",
-    should_reconsider,
-    {
-        "layer1_node": "layer1_node",
-        "layer4_node": "layer4_node"
-    }
-)
-workflow.add_edge("layer4_node", END)
+workflow.add_edge("layer2_node", END)
 
 def get_app():
     return workflow.compile()

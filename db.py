@@ -47,7 +47,7 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
     import uuid
     from datetime import datetime
     for idx, msg in enumerate(messages):
-        if not msg.get("responseL4"):
+        if not msg.get("responseL2"):
             continue
             
         l1_responses = msg.get("responsesL1") or []
@@ -76,13 +76,13 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
             "category": "SAFE",
             "answers": answers,
             "final_answer": {
-                "selected_id": msg.get("responseL4", {}).get("model_id", "Unknown"),
+                "selected_id": msg.get("responseL2", {}).get("model_id", "Unknown"),
                 "method": "parliament",
-                "final_text": msg.get("responseL4", {}).get("response", "")
+                "final_text": msg.get("responseL2", {}).get("response", "")
             },
             "user_feedback": {
                 "liked": msg.get("feedback") == "like",
-                "selected_answer_id": msg.get("responseL4", {}).get("model_id", "Unknown"),
+                "selected_answer_id": msg.get("responseL2", {}).get("model_id", "Unknown"),
                 "report_bias": False,
                 "feedback_text": ""
             },

@@ -26,8 +26,6 @@ class ChatQuery(BaseModel):
     history: List[dict]
     modelsL1: List[str]
     modelL2: str
-    modelL3: str
-    modelL4: str
 
 class TitleRequest(BaseModel):
     prompt: str
@@ -63,8 +61,6 @@ async def stream_graph(query: ChatQuery):
             "history": query.history,
             "models_l1": query.modelsL1,
             "model_l2": query.modelL2,
-            "model_l3": query.modelL3,
-            "model_l4": query.modelL4,
             "iterations": 0
         }
         print(f"DEBUG: Initial State -> {initial_state}")
