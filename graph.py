@@ -113,7 +113,9 @@ async def layer2_node(state: GraphState):
     aggregation_context += "**Layer 1 Deliberations:**\n"
     l1_resps = state.get('l1_responses') or []
     for r in l1_resps:
-        aggregation_context += f"--- {r.model_name} ---\n{r.response}\n\n"
+        model_name = r.model_name if hasattr(r, 'model_name') else r.get('model_name', 'Model')
+        response_text = r.response if hasattr(r, 'response') else r.get('response', '')
+        aggregation_context += f"--- {model_name} ---\n{response_text}\n\n"
     
     if state.get("feedback"):
         aggregation_context += f"**Previous Critique/Feedback:** {state['feedback']}\n\n"
