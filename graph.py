@@ -18,6 +18,9 @@ class ModelResponse(BaseModel):
     model_name: str
     response: str
     status: str
+    bias_score: float = 0.5
+    neutrality_score: float = 0.5
+    clarity_score: float = 0.5
 
 class GraphState(TypedDict):
     question: str
@@ -35,12 +38,16 @@ class GraphState(TypedDict):
     needs_reconsideration: bool
     confidence: int  # 0-100 scale
 
-async def route_query(model_id: str, persona: str, user_content: str, history: List[Dict[str, str]] = []) -> ModelResponse:
+async def route_query(model_id: str, persona: str, user_content: str, history: List[Dict[str, str]] = [], extract_scores: bool = False) -> ModelResponse:
     try:
         deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{model_id.upper()}", model_id)
         
+        prompt_with_scores = persona
+        if extract_scores:
+            prompt_with_scores += "\n\nIMPORTANT: At the end of your response, provide your self-assessment format exactly as: [SCORES: bias=0.82, neutrality=0.76, clarity=0.71]"
+
         # Construct messages with history
-        messages = [{"role": "system", "content": persona}]
+        messages = [{"role": "system", "content": prompt_with_scores}]
         for h in history:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": user_content})
@@ -51,7 +58,27 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
             max_completion_tokens=800,
             temperature=0.7,
         )
-        return ModelResponse(model_id=model_id, model_name=model_id.capitalize(), response=response.choices[0].message.content or "", status="success")
+        response_text = response.choices[0].message.content or ""
+        
+        bias, neutral, clarity = 0.5, 0.5, 0.5
+        if extract_scores:
+            import re
+            match = re.search(r"\[SCORES:\s*bias=([\d.]+),\s*neutrality=([\d.]+),\s*clarity=([\d.]+)\]", response_text)
+            if match:
+                bias = float(match.group(1))
+                neutral = float(match.group(2))
+                clarity = float(match.group(3))
+                response_text = response_text[:match.start()].strip()
+                
+        return ModelResponse(
+            model_id=model_id, 
+            model_name=model_id.capitalize(), 
+            response=response_text, 
+            status="success",
+            bias_score=bias,
+            neutrality_score=neutral,
+            clarity_score=clarity
+        )
     except Exception as e:
         print(f"[Azure API Error: {model_id}] {str(e)}")
         return ModelResponse(model_id=model_id, model_name=model_id.capitalize(), response=f"[Azure API Error: {model_id}] {str(e)}", status="error")
@@ -65,7 +92,7 @@ async def layer1_node(state: GraphState):
     models = state.get('models_l1') or []
     for m in models:
         sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Your mandate is absolute objectivity. You must analyze the user inquiry through a purely factual, non-partisan lens. BE CONCISE. Provide your response followed by the core logical reasons for your stance."
-        tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', [])))
+        tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', []), extract_scores=True))
     l1_resp = await asyncio.gather(*tasks)
     return {"l1_responses": l1_resp, "iterations": state.get("iterations", 0) + 1}
 

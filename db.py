@@ -44,6 +44,65 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
         upsert=True
     )
 
+    import uuid
+    from datetime import datetime
+    for idx, msg in enumerate(messages):
+        if not msg.get("responseL4"):
+            continue
+            
+        l1_responses = msg.get("responsesL1") or []
+        total_bias = 0.0
+        answers = []
+        for r in l1_responses:
+            bias = r.get("bias_score", 0.5)
+            total_bias += bias
+            answers.append({
+                "id": r.get("model_id"),
+                "model": r.get("model_id"),
+                "text": r.get("response", ""),
+                "auto_scores": {
+                    "bias": bias,
+                    "neutrality": r.get("neutrality_score", 0.5),
+                    "clarity": r.get("clarity_score", 0.5)
+                }
+            })
+            
+        avg_bias = total_bias / len(l1_responses) if len(l1_responses) > 0 else 0.5
+        q_id = f"{session_id}_{idx}"
+        
+        reward_doc = {
+            "question_id": q_id,
+            "question": msg.get("prompt", ""),
+            "category": "SAFE",
+            "answers": answers,
+            "final_answer": {
+                "selected_id": msg.get("responseL4", {}).get("model_id", "Unknown"),
+                "method": "parliament",
+                "final_text": msg.get("responseL4", {}).get("response", "")
+            },
+            "user_feedback": {
+                "liked": msg.get("feedback") == "like",
+                "selected_answer_id": msg.get("responseL4", {}).get("model_id", "Unknown"),
+                "report_bias": False,
+                "feedback_text": ""
+            },
+            "system_flags": {
+                "controversial": False,
+                "high_disagreement": False
+            },
+            "average_bias": avg_bias,
+            "timestamps": {
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+        }
+        
+        await db.reward_data.update_one(
+            {"question_id": q_id},
+            {"$set": reward_doc},
+            upsert=True
+        )
+
 async def get_user_chats(uid: str):
     cursor = chats_collection.find({"uid": uid}).sort("_id", -1)
     chats = await cursor.to_list(length=100)
@@ -62,6 +121,12 @@ async def save_message_feedback(session_id: str, message_idx: int, feedback: str
     await chats_collection.update_one(
         {"session_id": session_id},
         {"$set": {field: feedback}}
+    )
+    # Also update the reward_data collection
+    q_id = f"{session_id}_{message_idx}"
+    await db.reward_data.update_one(
+        {"question_id": q_id},
+        {"$set": {"user_feedback.liked": feedback == "like"}}
     )
 
 async def delete_chat_session(uid: str, session_id: str):
