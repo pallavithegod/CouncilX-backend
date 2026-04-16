@@ -1,4 +1,6 @@
 import os
+import uuid
+from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
@@ -64,8 +66,6 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
         upsert=True
     )
 
-    import uuid
-    from datetime import datetime
     for idx, msg in enumerate(messages):
         if not msg.get("responseL2"):
             continue
