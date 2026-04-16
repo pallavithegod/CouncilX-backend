@@ -25,6 +25,7 @@ async def create_or_update_user(uid: str, email: str, display_name: str, has_pre
             "email": email,
             "display_name": display_name,
             "prompts_used": 0,
+            "custom_instructions": "",
             "has_premium": has_premium,
             "role": "user"
         }
@@ -34,13 +35,32 @@ async def create_or_update_user(uid: str, email: str, display_name: str, has_pre
     user["isNewUser"] = False
     return user
 
+async def update_user_profile(uid: str, data: dict):
+    await users_collection.update_one({"uid": uid}, {"$set": data})
+    return await users_collection.find_one({"uid": uid})
+
 async def inc_user_prompts(uid: str):
     await users_collection.update_one({"uid": uid}, {"$inc": {"prompts_used": 1}})
 
 async def save_chat_session(uid: str, session_id: str, title: str, messages: list):
+    # Calculate aggregate bias for the session
+    all_scores = []
+    for m in messages:
+        if m.get("responsesL1"):
+            all_scores.extend([r.get("bias_score", 0.5) for r in m["responsesL1"]])
+    
+    avg_bias = sum(all_scores) / len(all_scores) if all_scores else 0.5
+
     await chats_collection.update_one(
         {"session_id": session_id},
-        {"$set": {"uid": uid, "title": title, "messages": messages}},
+        {"$set": {
+            "uid": uid, 
+            "title": title, 
+            "messages": messages,
+            "avg_bias": avg_bias,
+            "audit_grade": "A+" if avg_bias < 0.2 else "A" if avg_bias < 0.4 else "B" if avg_bias < 0.6 else "C" if avg_bias < 0.8 else "D",
+            "updated_at": datetime.utcnow().isoformat()
+        }},
         upsert=True
     )
 

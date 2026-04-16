@@ -5,6 +5,7 @@ from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from rag_service import search_context
 
 load_dotenv()
 
@@ -23,6 +24,8 @@ class ModelResponse(BaseModel):
     clarity_score: float = 0.5
 
 class GraphState(TypedDict):
+    uid: str
+    session_id: str
     question: str
     history: List[Dict[str, str]]
     models_l1: List[str]
@@ -33,6 +36,7 @@ class GraphState(TypedDict):
     feedback: str
     needs_reconsideration: bool
     confidence: float
+    context: str
 
 async def route_query(model_id: str, persona: str, user_content: str, history: List[Dict[str, str]] = [], extract_scores: bool = False) -> ModelResponse:
     try:
@@ -42,7 +46,6 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
         if extract_scores:
             prompt_with_scores += "\n\nIMPORTANT: At the end of your response, provide your self-assessment format exactly as: [SCORES: bias=0.82, neutrality=0.76, clarity=0.71]"
 
-        # Construct messages with history
         messages = [{"role": "system", "content": prompt_with_scores}]
         for h in history:
             messages.append({"role": h["role"], "content": h["content"]})
@@ -79,22 +82,35 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
         print(f"[Azure API Error: {model_id}] {str(e)}")
         return ModelResponse(model_id=model_id, model_name=model_id.capitalize(), response=f"[Azure API Error: {model_id}] {str(e)}", status="error")
 
+async def retrieval_node(state: GraphState):
+    print("--- Executing Retrieval ---")
+    session_id = state.get("session_id")
+    if not session_id: return {"context": ""}
+    
+    context = await search_context(state["question"], session_id)
+    return {"context": context}
+
 async def layer1_node(state: GraphState):
     print("--- Executing Layer 1 ---")
-    print(f"DEBUG: Layer 1 State Keys -> {list(state.keys())}")
     import asyncio
     tasks = []
     feedback_context = f"\n\nPre-existing feedback to consider: {state.get('feedback', '')}" if state.get('feedback') else ""
+    context_str = f"\n\nSpecialized Forensic Data Context:\n{state.get('context', 'None Available')}"
+    
     models = state.get('models_l1') or []
     for m in models:
-        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Your mandate is absolute objectivity. You must analyze the user inquiry through a purely factual, non-partisan lens. Provide a detailed and comprehensive analysis followed by the core logical reasons for your stance."
+        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Analyzing objective facts. Use the following Forensic Data Context to ground your response if relevant.\n{context_str}"
         tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', []), extract_scores=True))
     l1_resp = await asyncio.gather(*tasks)
     return {"l1_responses": l1_resp, "iterations": state.get("iterations", 0) + 1}
 
 async def layer2_node(state: GraphState):
     print(f"--- Executing Layer 2 (Iteration {state.get('iterations', 1)}) ---")
-    aggregation_context = f"**User Question:** {state.get('question', '')}\n\n**Layer 1 Deliberations:**\n"
+    aggregation_context = f"**User Question:** {state.get('question', '')}\n\n"
+    if state.get("context"):
+        aggregation_context += f"**Forensic Context:**\n{state['context']}\n\n"
+        
+    aggregation_context += "**Layer 1 Deliberations:**\n"
     l1_resps = state.get('l1_responses') or []
     for r in l1_resps:
         aggregation_context += f"--- {r.model_name} ---\n{r.response}\n\n"
@@ -102,16 +118,14 @@ async def layer2_node(state: GraphState):
     if state.get("feedback"):
         aggregation_context += f"**Previous Critique/Feedback:** {state['feedback']}\n\n"
 
-    aggregation_context += "Your task is to review these perspectives and provide a detailed, comprehensive, and perfectly neutral final answer that synthesizes all valid points. You MUST also provide your self-assessment scores."
+    aggregation_context += "Provide a final synthesis grounded in the forensic context and Layer 1 perspectives."
     
     sys_prompt = (
         f"You are {state['model_l2'].capitalize()}, the Final Arbiter. "
-        "Review the Tier 1 deliberations and synthesize a detailed, exhaustive, and neutral response. "
+        "Review Tier 1 logs and the provided context carefully. "
         "At the end, provide your scores in this format: [SCORES: bias=0.1, neutrality=0.9, confidence=0.85, feedback=NONE]"
-        "\nIf you feel the Tier 1 models missed something or were biased, specify it in 'feedback' and set confidence low."
     )
     
-    # We use a custom extraction for Layer 2 since it has 'confidence' and 'feedback'
     try:
         deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{state['model_l2'].upper()}", state['model_l2'])
         messages = [
@@ -137,14 +151,12 @@ async def layer2_node(state: GraphState):
             feedback = match.group(4).strip()
             response_text = response_text.replace(match.group(0), "").strip()
         
-        # Decide if reconsideration is needed
-        # Condition: iterations < 2 AND (bias > 0.6 OR confidence < 0.7)
         needs_reconsideration = False
         if state.get("iterations", 1) < 2:
             if bias > 0.6 or confidence < 0.7:
                 needs_reconsideration = True
                 if not feedback or feedback.lower() == "none":
-                    feedback = f"The previous synthesis had high bias ({bias}) or low confidence ({confidence}). Please re-evaluate."
+                    feedback = "Re-evaluate based on suspected bias or low confidence."
 
         l2_resp = ModelResponse(
             model_id=state['model_l2'],
@@ -168,26 +180,20 @@ async def layer2_node(state: GraphState):
 
 def should_continue(state: GraphState):
     if state.get("needs_reconsideration"):
-        print("--- REVISION TRIGGERED ---")
         return "layer1_node"
     return END
 
 workflow = StateGraph(GraphState)
+workflow.add_node("retrieval_node", retrieval_node)
 workflow.add_node("layer1_node", layer1_node)
 workflow.add_node("layer2_node", layer2_node)
 
-workflow.set_entry_point("layer1_node")
+workflow.set_entry_point("retrieval_node")
+workflow.add_edge("retrieval_node", "layer1_node")
 workflow.add_edge("layer1_node", "layer2_node")
-workflow.add_conditional_edges(
-    "layer2_node",
-    should_continue,
-    {
-        "layer1_node": "layer1_node",
-        END: END
-    }
-)
-
-def get_app():
-    return workflow.compile()
+workflow.add_conditional_edges("layer2_node", should_continue, {"layer1_node": "layer1_node", END: END})
 
 app_graph = workflow.compile()
+
+def get_app():
+    return app_graph
