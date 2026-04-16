@@ -27,14 +27,12 @@ class GraphState(TypedDict):
     history: List[Dict[str, str]]
     models_l1: List[str]
     model_l2: str
-    model_l3: str
-    model_l4: str
     l1_responses: List[ModelResponse]
     l2_response: Optional[ModelResponse]
     iterations: int
     feedback: str
     needs_reconsideration: bool
-    confidence: int  # 0-100 scale
+    confidence: float
 
 async def route_query(model_id: str, persona: str, user_content: str, history: List[Dict[str, str]] = [], extract_scores: bool = False) -> ModelResponse:
     try:
@@ -95,17 +93,84 @@ async def layer1_node(state: GraphState):
     return {"l1_responses": l1_resp, "iterations": state.get("iterations", 0) + 1}
 
 async def layer2_node(state: GraphState):
-    print("--- Executing Layer 2 ---")
-    print(f"DEBUG: Layer 2 State Keys -> {list(state.keys())}")
-    aggregation_context = f"**User Question:** {state.get('question', '')}\n\n**Layer 1 Perspectives:**\n"
+    print(f"--- Executing Layer 2 (Iteration {state.get('iterations', 1)}) ---")
+    aggregation_context = f"**User Question:** {state.get('question', '')}\n\n**Layer 1 Deliberations:**\n"
     l1_resps = state.get('l1_responses') or []
     for r in l1_resps:
         aggregation_context += f"--- {r.model_name} ---\n{r.response}\n\n"
-    aggregation_context += "Critically review these Tier 1 perspectives for logical fallacies, emotional framing, or subjective bias. Synthesize them into a singular, verified objective framework."
     
-    sys_prompt = f"You are {state['model_l2'].capitalize()}, the 1st Speaker. Your task is to verify Tier 1 deliberations and formulate an aggressively neutral synthesis. BE CONCISE. Provide reasoning for your synthesis decisions."
-    l2_resp = await route_query(state['model_l2'], sys_prompt, aggregation_context, state.get('history', []))
-    return {"l2_response": l2_resp}
+    if state.get("feedback"):
+        aggregation_context += f"**Previous Critique/Feedback:** {state['feedback']}\n\n"
+
+    aggregation_context += "Your task is to review these perspectives and provide a final, neutral, and unbiased answer. You MUST also provide your self-assessment scores."
+    
+    sys_prompt = (
+        f"You are {state['model_l2'].capitalize()}, the Final Arbiter. "
+        "Review the Tier 1 deliberations and synthesize a perfectly neutral response. "
+        "At the end, provide your scores in this format: [SCORES: bias=0.1, neutrality=0.9, confidence=0.85, feedback=NONE]"
+        "\nIf you feel the Tier 1 models missed something or were biased, specify it in 'feedback' and set confidence low."
+    )
+    
+    # We use a custom extraction for Layer 2 since it has 'confidence' and 'feedback'
+    try:
+        deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{state['model_l2'].upper()}", state['model_l2'])
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": aggregation_context}
+        ]
+        
+        response = await azure_client.chat.completions.create(
+            model=deployment_name,
+            messages=messages,
+            max_completion_tokens=4000,
+            temperature=0.4,
+        )
+        response_text = response.choices[0].message.content or ""
+        
+        bias, neutral, confidence, feedback = 0.5, 0.5, 0.5, ""
+        import re
+        match = re.search(r"\[SCORES:\s*bias=([\d.]+),\s*neutrality=([\d.]+),\s*confidence=([\d.]+),\s*feedback=(.*?)\]", response_text)
+        if match:
+            bias = float(match.group(1))
+            neutral = float(match.group(2))
+            confidence = float(match.group(3))
+            feedback = match.group(4).strip()
+            response_text = response_text[:match.start()].strip()
+        
+        # Decide if reconsideration is needed
+        # Condition: iterations < 2 AND (bias > 0.6 OR confidence < 0.7)
+        needs_reconsideration = False
+        if state.get("iterations", 1) < 2:
+            if bias > 0.6 or confidence < 0.7:
+                needs_reconsideration = True
+                if not feedback or feedback.lower() == "none":
+                    feedback = f"The previous synthesis had high bias ({bias}) or low confidence ({confidence}). Please re-evaluate."
+
+        l2_resp = ModelResponse(
+            model_id=state['model_l2'],
+            model_name=state['model_l2'].capitalize(),
+            response=response_text,
+            status="success",
+            bias_score=bias,
+            neutrality_score=neutral,
+            clarity_score=confidence
+        )
+        
+        return {
+            "l2_response": l2_resp,
+            "needs_reconsideration": needs_reconsideration,
+            "feedback": feedback,
+            "confidence": confidence * 100
+        }
+    except Exception as e:
+        print(f"[Layer 2 Error] {str(e)}")
+        return {"needs_reconsideration": False}
+
+def should_continue(state: GraphState):
+    if state.get("needs_reconsideration"):
+        print("--- REVISION TRIGGERED ---")
+        return "layer1_node"
+    return END
 
 workflow = StateGraph(GraphState)
 workflow.add_node("layer1_node", layer1_node)
@@ -113,7 +178,14 @@ workflow.add_node("layer2_node", layer2_node)
 
 workflow.set_entry_point("layer1_node")
 workflow.add_edge("layer1_node", "layer2_node")
-workflow.add_edge("layer2_node", END)
+workflow.add_conditional_edges(
+    "layer2_node",
+    should_continue,
+    {
+        "layer1_node": "layer1_node",
+        END: END
+    }
+)
 
 def get_app():
     return workflow.compile()
