@@ -32,20 +32,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
-class ForceCORSMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: StarletteRequest, call_next):
-        if request.method == "OPTIONS":
-            response = StarletteResponse(status_code=200)
-            response.headers["Access-Control-Allow-Origin"] = request.headers.get("origin", "*")
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            return response
-        response = await call_next(request)
-        origin = request.headers.get("origin", "*")
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response
+# Note: CORSMiddleware is usually enough. ForceCORSMiddleware can sometimes interfere with streaming.
+# We'll keep it but ensure it doesn't buffer.
+
 
 app.add_middleware(ForceCORSMiddleware)
 
@@ -104,18 +93,32 @@ async def stream_graph(query: ChatQuery):
         }
         
         try:
+            # Send initial event to confirm connection
+            yield f"data: {json.dumps({'node': 'start', 'state': {}})}\n\n"
+            
             async for event in graph.astream(initial_state, config=config):
                 for node_name, state_update in event.items():
                     try:
                         clean_state = jsonable_encoder(state_update)
                         yield f"data: {json.dumps({'node': node_name, 'state': clean_state})}\n\n"
                     except Exception as e:
+                        print(f"Error encoding state: {e}")
                         yield f"data: {json.dumps({'node': 'error_node', 'state': {'error': str(e)}})}\n\n"
         except Exception as e:
+            print(f"Graph execution error: {e}")
             yield f"data: {json.dumps({'node': 'error_node', 'state': {'error': str(e)}})}\n\n"
                 
     from fastapi.responses import StreamingResponse
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable buffering for Azure/Nginx
+            "Access-Control-Allow-Origin": "*", # Redundant but safe
+        }
+    )
 
 @app.post("/api/ingest")
 async def ingest_file_api(session_id: str = Form(...), file: UploadFile = File(...)):

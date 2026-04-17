@@ -62,12 +62,14 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
         bias, neutral, clarity = 0.5, 0.5, 0.5
         if extract_scores:
             import re
-            match = re.search(r"\[SCORES:\s*bias=([\d.]+),\s*neutrality=([\d.]+),\s*clarity=([\d.]+)\]", response_text)
+            # More flexible regex for scores
+            match = re.search(r"\[SCORES:.*?bias=([\d.]+).*?neutrality=([\d.]+).*?clarity=([\d.]+).*?\]", response_text, re.IGNORECASE)
             if match:
                 bias = float(match.group(1))
                 neutral = float(match.group(2))
                 clarity = float(match.group(3))
-                response_text = response_text.replace(match.group(0), "").strip()
+                response_text = re.sub(r"\[SCORES:.*?\]", "", response_text, flags=re.IGNORECASE).strip()
+
                 
         return ModelResponse(
             model_id=model_id, 
@@ -145,13 +147,15 @@ async def layer2_node(state: GraphState):
         
         bias, neutral, confidence, feedback = 0.5, 0.5, 0.5, ""
         import re
-        match = re.search(r"\[SCORES:\s*bias=([\d.]+),\s*neutrality=([\d.]+),\s*confidence=([\d.]+),\s*feedback=(.*?)\]", response_text)
+        # Flexible regex for l2 scores
+        match = re.search(r"\[SCORES:.*?bias=([\d.]+).*?neutrality=([\d.]+).*?confidence=([\d.]+).*?feedback=(.*?)\]", response_text, re.IGNORECASE | re.DOTALL)
         if match:
             bias = float(match.group(1))
             neutral = float(match.group(2))
             confidence = float(match.group(3))
             feedback = match.group(4).strip()
-            response_text = response_text.replace(match.group(0), "").strip()
+            response_text = re.sub(r"\[SCORES:.*?\]", "", response_text, flags=re.IGNORECASE | re.DOTALL).strip()
+
         
         needs_reconsideration = False
         if state.get("iterations", 1) < 2:
@@ -177,8 +181,19 @@ async def layer2_node(state: GraphState):
             "confidence": confidence * 100
         }
     except Exception as e:
-        print(f"[Layer 2 Error] {str(e)}")
-        return {"needs_reconsideration": False}
+        error_msg = f"[Layer 2 Error] {str(e)}"
+        print(error_msg)
+        return {
+            "l2_response": ModelResponse(
+                model_id=state.get('model_l2', 'unknown'),
+                model_name="Error",
+                response=error_msg,
+                status="error"
+            ),
+            "needs_reconsideration": False,
+            "feedback": str(e),
+            "confidence": 0
+        }
 
 def should_continue(state: GraphState):
     if state.get("needs_reconsideration"):
