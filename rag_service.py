@@ -113,9 +113,9 @@ async def search_context(query: str, session_id: str, limit: int = 3):
     
     from qdrant_client.http.exceptions import UnexpectedResponse
     try:
-        results = qdrant_client.query_points(
+        results = qdrant_client.search(
             collection_name=COLLECTION_NAME,
-            query=vector,
+            query_vector=vector,
             query_filter=models.Filter(
                 must=[
                     models.FieldCondition(
@@ -125,7 +125,7 @@ async def search_context(query: str, session_id: str, limit: int = 3):
                 ]
             ),
             limit=limit
-        ).points
+        )
         
         context = "\n\n".join([r.payload["text"] for r in results])
         return context
