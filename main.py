@@ -82,15 +82,29 @@ async def stream_graph(query: ChatQuery):
     
     async def event_generator():
         config = {"configurable": {"thread_id": query.session_id or str(uuid.uuid4())}}
+        # Convert frontend history to OpenAI format
+        formatted_history = []
+        for msg in query.history:
+            if msg.get("prompt"):
+                formatted_history.append({"role": "user", "content": msg["prompt"]})
+            if msg.get("responseL2"):
+                resp = msg["responseL2"]
+                content = resp if isinstance(resp, str) else resp.get("response", "")
+                if content:
+                    formatted_history.append({"role": "assistant", "content": content})
+
         initial_state = {
             "uid": query.uid,
             "session_id": query.session_id,
             "question": query.prompt,
-            "history": query.history,
+            "history": formatted_history,
             "models_l1": query.modelsL1,
             "model_l2": query.modelL2,
             "iterations": 0,
-            "context": ""
+            "deliberation_history": [],
+            "context": "",
+            "web_context": "",
+            "status": ""
         }
         
         print(f"--- Starting Graph for session: {query.session_id} ---")
@@ -216,3 +230,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
+    # print("Server is Running bro !!")

@@ -1,5 +1,8 @@
 import os
 import json
+import asyncio
+import re
+from datetime import datetime, timezone
 from typing import TypedDict, Annotated, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
@@ -32,11 +35,14 @@ class GraphState(TypedDict):
     model_l2: str
     l1_responses: List[ModelResponse]
     l2_response: Optional[ModelResponse]
+    deliberation_history: List[Dict[str, Any]]
     iterations: int
     feedback: str
     needs_reconsideration: bool
     confidence: float
     context: str
+    web_context: str
+    status: str
 
 async def route_query(model_id: str, persona: str, user_content: str, history: List[Dict[str, str]] = [], extract_scores: bool = False) -> ModelResponse:
     try:
@@ -93,7 +99,29 @@ async def retrieval_node(state: GraphState):
     if not session_id: return {"context": ""}
     
     context = await search_context(state["question"], session_id)
-    return {"context": context}
+    return {"context": context, "status": "Forensic file data retrieved."}
+
+async def web_research_node(state: GraphState):
+    print(f"--- Executing Web Research for query: {state['question']} ---")
+    from duckduckgo_search import DDGS
+    
+    query = state["question"]
+    web_results = ""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=6))
+            for r in results:
+                web_results += f"Source: {r.get('href')}\nTitle: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
+    except Exception as e:
+        print(f"Web Search Error (DDG): {e}")
+        web_results = "Failed to retrieve web search data via DDG."
+    
+    if not web_results.strip() or "Failed" in web_results:
+        print("Search returned no results or failed.")
+    else:
+        print(f"Web Search success, found {len(web_results)} chars of context.")
+        
+    return {"web_context": web_results, "status": "Live web research completed."}
 
 async def layer1_node(state: GraphState):
     print("--- Executing Layer 1 ---")
@@ -101,15 +129,28 @@ async def layer1_node(state: GraphState):
     tasks = []
     feedback_context = f"\n\nPre-existing feedback to consider: {state.get('feedback', '')}" if state.get('feedback') else ""
     context_str = f"\n\nSpecialized Forensic Data Context:\n{state.get('context', 'None Available')}"
+    web_str = f"\n\nLive Web Research Data:\n{state.get('web_context', 'None Available')}"
     
     models = state.get('models_l1') or []
+    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     for m in models:
-        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Analyzing objective facts. Use the following Forensic Data Context to ground your response if relevant.\n{context_str}"
+        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Analyzing objective facts.\nCURRENT DATE: {current_time} UTC\n\nUse the following context to ground your response if relevant.\n\nFORENSIC DATA:\n{context_str}\n\nWEB RESEARCH (LATEST INFO):\n{web_str}"
         tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', []), extract_scores=True))
     print(f"--- Layer 1: starting tasks for {len(tasks)} models ---")
     l1_resp = await asyncio.gather(*tasks)
     print(f"--- Layer 1: finished, reached {len(l1_resp)} responses ---")
-    return {"l1_responses": l1_resp, "iterations": state.get("iterations", 0) + 1}
+    current_history = state.get("deliberation_history", [])
+    new_entry = {
+        "iteration": state.get("iterations", 0) + 1,
+        "responses": [r.dict() if hasattr(r, 'dict') else r for r in l1_resp],
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    return {
+        "l1_responses": l1_resp, 
+        "deliberation_history": current_history + [new_entry],
+        "iterations": state.get("iterations", 0) + 1, 
+        "status": "Tier 1 deliberations finished."
+    }
 
 
 async def layer2_node(state: GraphState):
@@ -117,6 +158,8 @@ async def layer2_node(state: GraphState):
     aggregation_context = f"**User Question:** {state.get('question', '')}\n\n"
     if state.get("context"):
         aggregation_context += f"**Forensic Context:**\n{state['context']}\n\n"
+    if state.get("web_context"):
+        aggregation_context += f"**Web Research:**\n{state['web_context']}\n\n"
         
     aggregation_context += "**Layer 1 Deliberations:**\n"
     l1_resps = state.get('l1_responses') or []
@@ -130,11 +173,21 @@ async def layer2_node(state: GraphState):
 
     aggregation_context += "Provide a final synthesis grounded in the forensic context and Layer 1 perspectives."
     
-    sys_prompt = (
-        f"You are {state['model_l2'].capitalize()}, the Final Arbiter. "
-        "Review Tier 1 logs and the provided context carefully. "
-        "At the end, provide your scores in this format: [SCORES: bias=0.1, neutrality=0.9, confidence=0.85, feedback=NONE]"
-    )
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    sys_prompt = f"""You are the Final Arbiter of the AI Parliament. 
+    Current Date: {current_date} UTC.
+    
+    Your task is to synthesize the deliberations into a definitive, and comprehensive verdict.
+    
+    CRITICAL RULES:
+    1. NEVER mention "Layer 1", "Models", "Deliberators", "Arbiter" or any internal system jargon.
+    2. Provide a unified, professional response as if you are a single objective authority.
+    3. Use a clear, structured layout with bold headings and bullet points (Grok-style).
+    4. Ensure you explicitly reference the current status (the year {current_date[:4]}) to provide the most up-to-date answer.
+    5. Always output a confidence score and bias assessment at the VERY END in this EXACT format:
+       [SCORES: confidence=X.XX, bias=X.XX, feedback=Brief instructions for revision if needed else "None"]
+    
+    Provide a detailed and definitive answer grounded in the forensic and web research data."""
     
     try:
         deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{state['model_l2'].upper()}", state['model_l2'])
@@ -187,7 +240,8 @@ async def layer2_node(state: GraphState):
             "l2_response": l2_resp,
             "needs_reconsideration": needs_reconsideration,
             "feedback": feedback,
-            "confidence": confidence * 100
+            "confidence": confidence * 100,
+            "status": "Consensus reached." if not needs_reconsideration else "Re-deliberation triggered."
         }
     except Exception as e:
         error_msg = f"[Layer 2 Error] {str(e)}"
@@ -211,11 +265,13 @@ def should_continue(state: GraphState):
 
 workflow = StateGraph(GraphState)
 workflow.add_node("retrieval_node", retrieval_node)
+workflow.add_node("web_research_node", web_research_node)
 workflow.add_node("layer1_node", layer1_node)
 workflow.add_node("layer2_node", layer2_node)
 
 workflow.set_entry_point("retrieval_node")
-workflow.add_edge("retrieval_node", "layer1_node")
+workflow.add_edge("retrieval_node", "web_research_node")
+workflow.add_edge("web_research_node", "layer1_node")
 workflow.add_edge("layer1_node", "layer2_node")
 workflow.add_conditional_edges("layer2_node", should_continue, {"layer1_node": "layer1_node", END: END})
 

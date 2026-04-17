@@ -23,6 +23,7 @@ azure_client = AsyncOpenAI(
 qdrant_client = QdrantClient(
     url=qdrant_url,
     api_key=qdrant_api_key,
+    check_compatibility=False
 )
 
 COLLECTION_NAME = "councilx_audit_nodes"
@@ -37,7 +38,23 @@ async def init_qdrant():
                 collection_name=COLLECTION_NAME,
                 vectors_config=models.VectorParams(size=1536, distance=models.Distance.COSINE),
             )
-            print(f"Created Qdrant Collection: {COLLECTION_NAME}")
+            # Create payload index for session_id to allow filtering
+            qdrant_client.create_payload_index(
+                collection_name=COLLECTION_NAME,
+                field_name="session_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+            print(f"Created Qdrant Collection and Payload Index: {COLLECTION_NAME}")
+        else:
+            # For robustness, try creating the index if it was missed before
+            try:
+                qdrant_client.create_payload_index(
+                    collection_name=COLLECTION_NAME,
+                    field_name="session_id",
+                    field_schema=models.PayloadSchemaType.KEYWORD,
+                )
+            except:
+                pass # Already exists or other non-critical error
     except Exception as e:
         print(f"Qdrant Init Error: {e}")
 
@@ -90,22 +107,33 @@ async def ingest_pdf(file_path: str, session_id: str):
     return len(points)
 
 async def search_context(query: str, session_id: str, limit: int = 3):
+    await init_qdrant()
     vector = await get_embeddings(query)
     if not vector: return ""
     
-    results = qdrant_client.search(
-        collection_name=COLLECTION_NAME,
-        query_vector=vector,
-        query_filter=models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="session_id",
-                    match=models.MatchValue(value=session_id)
-                )
-            ]
-        ),
-        limit=limit
-    )
-    
-    context = "\n\n".join([r.payload["text"] for r in results])
-    return context
+    from qdrant_client.http.exceptions import UnexpectedResponse
+    try:
+        results = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vector,
+            query_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="session_id",
+                        match=models.MatchValue(value=session_id)
+                    )
+                ]
+            ),
+            limit=limit
+        ).points
+        
+        context = "\n\n".join([r.payload["text"] for r in results])
+        return context
+    except UnexpectedResponse as e:
+        if e.status_code == 404:
+            print(f"Qdrant collection {COLLECTION_NAME} not found. Returning empty context.")
+            return ""
+        raise e
+    except Exception as e:
+        print(f"Search Context Error: {e}")
+        return ""

@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
@@ -61,7 +61,7 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
             "messages": messages,
             "avg_bias": avg_bias,
             "audit_grade": "A+" if avg_bias < 0.2 else "A" if avg_bias < 0.4 else "B" if avg_bias < 0.6 else "C" if avg_bias < 0.8 else "D",
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }},
         upsert=True
     )
@@ -111,9 +111,10 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
                 "high_disagreement": False
             },
             "average_bias": avg_bias,
+            "deliberation_history": msg.get("deliberation_history") or [],
             "timestamps": {
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }
         }
         
