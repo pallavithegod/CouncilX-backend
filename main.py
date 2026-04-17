@@ -36,7 +36,8 @@ from starlette.responses import Response as StarletteResponse
 # We'll keep it but ensure it doesn't buffer.
 
 
-app.add_middleware(ForceCORSMiddleware)
+# ForceCORSMiddleware removed as it interacted poorly with streaming; headers now handled in StreamingResponse directly.
+
 
 # Models
 class ChatQuery(BaseModel):
