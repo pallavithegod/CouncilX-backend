@@ -25,6 +25,7 @@ class ModelResponse(BaseModel):
     bias_score: float = 0.5
     neutrality_score: float = 0.5
     clarity_score: float = 0.5
+    full_prompt: List[Dict[str, str]] = [] # Stores system, history, and user messages
 
 class GraphState(TypedDict):
     uid: str
@@ -87,11 +88,20 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
             status="success",
             bias_score=bias,
             neutrality_score=neutral,
-            clarity_score=clarity
+            clarity_score=clarity,
+            full_prompt=messages
         )
     except Exception as e:
         print(f"[Azure API Error: {model_id}] {str(e)}")
-        return ModelResponse(model_id=model_id, model_name=model_id.capitalize(), response=f"[Azure API Error: {model_id}] {str(e)}", status="error")
+        # Construct basic messages if it failed before construction
+        msg_context = messages if 'messages' in locals() else [{"role": "user", "content": user_content}]
+        return ModelResponse(
+            model_id=model_id, 
+            model_name=model_id.capitalize(), 
+            response=f"[Azure API Error: {model_id}] {str(e)}", 
+            status="error",
+            full_prompt=msg_context
+        )
 
 async def retrieval_node(state: GraphState):
     print("--- Executing Retrieval ---")
@@ -255,7 +265,8 @@ async def layer2_node(state: GraphState):
             status="success",
             bias_score=bias,
             neutrality_score=neutral,
-            clarity_score=confidence
+            clarity_score=confidence,
+            full_prompt=messages
         )
         
         return {
@@ -273,7 +284,8 @@ async def layer2_node(state: GraphState):
                 model_id=state.get('model_l2', 'unknown'),
                 model_name="Error",
                 response=error_msg,
-                status="error"
+                status="error",
+                full_prompt=messages if 'messages' in locals() else []
             ),
             "needs_reconsideration": False,
             "feedback": str(e),

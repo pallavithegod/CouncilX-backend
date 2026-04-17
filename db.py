@@ -80,6 +80,8 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
                 "id": r.get("model_id"),
                 "model": r.get("model_id"),
                 "text": r.get("response", ""),
+                "full_prompt": r.get("full_prompt", []),
+                "raw_output": r.get("response", ""),
                 "auto_scores": {
                     "bias": bias,
                     "neutrality": r.get("neutrality_score", 0.5),
@@ -98,7 +100,9 @@ async def save_chat_session(uid: str, session_id: str, title: str, messages: lis
             "final_answer": {
                 "selected_id": msg.get("responseL2", {}).get("model_id", "Unknown"),
                 "method": "parliament",
-                "final_text": msg.get("responseL2", {}).get("response", "")
+                "final_text": msg.get("responseL2", {}).get("response", ""),
+                "full_prompt": msg.get("responseL2", {}).get("full_prompt", []),
+                "raw_output": msg.get("responseL2", {}).get("response", "")
             },
             "user_feedback": {
                 "liked": msg.get("feedback") == "like",
