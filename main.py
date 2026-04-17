@@ -93,21 +93,29 @@ async def stream_graph(query: ChatQuery):
             "context": ""
         }
         
+        print(f"--- Starting Graph for session: {query.session_id} ---")
+        print(f"Input prompt: {query.prompt}")
+        print(f"Models L1: {query.modelsL1}, L2: {query.modelL2}")
+        
         try:
             # Send initial event to confirm connection
             yield f"data: {json.dumps({'node': 'start', 'state': {}})}\n\n"
             
             async for event in graph.astream(initial_state, config=config):
+                print(f"Graph Event: {list(event.keys())}")
                 for node_name, state_update in event.items():
                     try:
                         clean_state = jsonable_encoder(state_update)
+                        print(f"Node '{node_name}' update: {json.dumps(clean_state)[:200]}...")
                         yield f"data: {json.dumps({'node': node_name, 'state': clean_state})}\n\n"
                     except Exception as e:
-                        print(f"Error encoding state: {e}")
+                        print(f"CRITICAL: Error encoding state for node {node_name}: {e}")
                         yield f"data: {json.dumps({'node': 'error_node', 'state': {'error': str(e)}})}\n\n"
         except Exception as e:
-            print(f"Graph execution error: {e}")
-            yield f"data: {json.dumps({'node': 'error_node', 'state': {'error': str(e)}})}\n\n"
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"CRITICAL: Graph execution error:\n{error_trace}")
+            yield f"data: {json.dumps({'node': 'error_node', 'state': {'error': str(e), 'traceback': error_trace}})}\n\n"
                 
     from fastapi.responses import StreamingResponse
     return StreamingResponse(

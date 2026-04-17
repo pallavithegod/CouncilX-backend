@@ -51,6 +51,7 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": user_content})
 
+        print(f"[Azure Request] model={model_id}, deployment={deployment_name}")
         response = await azure_client.chat.completions.create(
             model=deployment_name,
             messages=messages,
@@ -58,6 +59,8 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
             temperature=0.7,
         )
         response_text = response.choices[0].message.content or ""
+        print(f"[Azure Response] model={model_id}, length={len(response_text)}")
+
         
         bias, neutral, clarity = 0.5, 0.5, 0.5
         if extract_scores:
@@ -103,8 +106,11 @@ async def layer1_node(state: GraphState):
     for m in models:
         sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Analyzing objective facts. Use the following Forensic Data Context to ground your response if relevant.\n{context_str}"
         tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', []), extract_scores=True))
+    print(f"--- Layer 1: starting tasks for {len(tasks)} models ---")
     l1_resp = await asyncio.gather(*tasks)
+    print(f"--- Layer 1: finished, reached {len(l1_resp)} responses ---")
     return {"l1_responses": l1_resp, "iterations": state.get("iterations", 0) + 1}
+
 
 async def layer2_node(state: GraphState):
     print(f"--- Executing Layer 2 (Iteration {state.get('iterations', 1)}) ---")
@@ -137,6 +143,7 @@ async def layer2_node(state: GraphState):
             {"role": "user", "content": aggregation_context}
         ]
         
+        print(f"[Layer 2 Request] model={state['model_l2']}, deployment={deployment_name}")
         response = await azure_client.chat.completions.create(
             model=deployment_name,
             messages=messages,
@@ -144,6 +151,8 @@ async def layer2_node(state: GraphState):
             temperature=0.4,
         )
         response_text = response.choices[0].message.content or ""
+        print(f"[Layer 2 Response] length={len(response_text)}")
+
         
         bias, neutral, confidence, feedback = 0.5, 0.5, 0.5, ""
         import re
