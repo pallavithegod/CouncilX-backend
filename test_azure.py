@@ -13,6 +13,7 @@ client = OpenAI(
     api_key=api_key
 )
 
+
 try:
     completion = client.chat.completions.create(
         model=deployment_name,
