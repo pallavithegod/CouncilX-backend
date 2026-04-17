@@ -134,7 +134,29 @@ async def layer1_node(state: GraphState):
     models = state.get('models_l1') or []
     current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     for m in models:
-        sys_prompt = f"You are {m.capitalize()}, a Tier 1 Deliberator. Analyzing objective facts.\nCURRENT DATE: {current_time} UTC\n\nUse the following context to ground your response if relevant.\n\nFORENSIC DATA:\n{context_str}\n\nWEB RESEARCH (LATEST INFO):\n{web_str}"
+        sys_prompt = f"""You are {m.capitalize()}, a Tier 1 Deliberator. Analyzing objective facts.
+CURRENT DATE: {current_time} UTC
+
+MISSION: 
+Examine the provided context to answer the user inquiry. 
+
+CRITICAL INSTRUCTION FOR FORENSIC DATA:
+If 'FORENSIC DATA' (retrieved from uploaded files like PDF, TXT, or DOCX) is present, your PRIMARY TASK is to audit it for BIASNESS. Specifically, look for:
+- Partisan framing or ideological leanings.
+- Cherry-picked facts or omission of counter-arguments.
+- Emotional or leading language.
+- Logical fallacies.
+
+WEB RESEARCH (LATEST INFO):
+Use this to provide external context and verify or challenge the forensic data.
+
+CONTEXT:
+FORENSIC DATA:
+{context_str}
+
+WEB RESEARCH:
+{web_str}
+"""
         tasks.append(route_query(m, sys_prompt, state['question'] + feedback_context, state.get('history', []), extract_scores=True))
     print(f"--- Layer 1: starting tasks for {len(tasks)} models ---")
     l1_resp = await asyncio.gather(*tasks)
