@@ -201,20 +201,24 @@ WEB RESEARCH:
 
 async def reward_scoring_node(state: GraphState):
     print("--- Executing Reward Scoring (RLHF) ---")
-    from reward_model import get_reward_score
     
     l1_responses = state.get("l1_responses", [])
     if not l1_responses:
         return {"status": "No Layer 1 responses to score."}
-        
+    
+    try:
+        from reward_model import get_reward_score
+    except ImportError:
+        print("[Reward Model] torch/model not available. Skipping RL scoring.")
+        return {"status": "Reward scoring skipped (model not loaded)."}
+    
     scored_responses = []
     best_score = -1
     best_model = ""
     
     for r in l1_responses:
-        # Score the response based on the trained DPO policy
         score = get_reward_score(state["question"], r.response)
-        r.clarity_score = score # Using clarity_score field for the RL reward for now
+        r.clarity_score = score
         
         if score > best_score:
             best_score = score
