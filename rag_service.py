@@ -113,21 +113,39 @@ async def search_context(query: str, session_id: str, limit: int = 3):
     
     from qdrant_client.http.exceptions import UnexpectedResponse
     try:
-        results = qdrant_client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=vector,
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="session_id",
-                        match=models.MatchValue(value=session_id)
-                    )
-                ]
-            ),
-            limit=limit
-        )
+        # Robust search: try modern query_points first, fallback to search
+        if hasattr(qdrant_client, "query_points"):
+            results = qdrant_client.query_points(
+                collection_name=COLLECTION_NAME,
+                query=vector,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="session_id",
+                            match=models.MatchValue(value=session_id)
+                        )
+                    ]
+                ),
+                limit=limit
+            ).points
+        elif hasattr(qdrant_client, "search"):
+            results = qdrant_client.search(
+                collection_name=COLLECTION_NAME,
+                query_vector=vector,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="session_id",
+                            match=models.MatchValue(value=session_id)
+                        )
+                    ]
+                ),
+                limit=limit
+            )
+        else:
+            raise AttributeError("QdrantClient has neither 'query_points' nor 'search' method. Please check qdrant-client version.")
         
-        context = "\n\n".join([r.payload["text"] for r in results])
+        context = "\n\n".join([r.payload["text"] for r in results if hasattr(r, 'payload') and r.payload])
         return context
     except UnexpectedResponse as e:
         if e.status_code == 404:

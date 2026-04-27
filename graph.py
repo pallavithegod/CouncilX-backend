@@ -118,10 +118,12 @@ async def web_research_node(state: GraphState):
     query = state["question"]
     web_results = ""
     try:
+        from duckduckgo_search import DDGS
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=6))
+            # text() is the current recommended method
+            results = list(ddgs.text(query, max_results=5))
             for r in results:
-                web_results += f"Source: {r.get('href')}\nTitle: {r.get('title')}\nSnippet: {r.get('body')}\n\n"
+                web_results += f"Source: {r.get('href', 'N/A')}\nTitle: {r.get('title', 'N/A')}\nSnippet: {r.get('body', 'N/A')}\n\n"
     except Exception as e:
         print(f"Web Search Error (DDG): {e}")
         web_results = "Failed to retrieve web search data via DDG."
@@ -174,7 +176,7 @@ WEB RESEARCH:
     current_history = state.get("deliberation_history", [])
     new_entry = {
         "iteration": state.get("iterations", 0) + 1,
-        "responses": [r.dict() if hasattr(r, 'dict') else r for r in l1_resp],
+        "responses": [r.model_dump() if hasattr(r, 'model_dump') else r for r in l1_resp],
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     return {
