@@ -17,6 +17,18 @@ azure_client = AsyncOpenAI(
     base_url=os.getenv("AZURE_OPENAI_ENDPOINT", "")
 )
 
+def get_client_for_model(model_id: str) -> AsyncOpenAI:
+    """Return a model-specific client if a custom endpoint exists, else the default."""
+    custom_endpoint = os.getenv(f"AZURE_ENDPOINT_{model_id.upper()}")
+    custom_key = os.getenv(f"AZURE_KEY_{model_id.upper()}")
+    if custom_endpoint:
+        return AsyncOpenAI(
+            api_key=custom_key or os.getenv("AZURE_OPENAI_API_KEY", ""),
+            base_url=custom_endpoint,
+            default_query={"api-version": "2024-05-01-preview"}
+        )
+    return azure_client
+
 class ModelResponse(BaseModel):
     model_id: str
     model_name: str
@@ -59,7 +71,8 @@ async def route_query(model_id: str, persona: str, user_content: str, history: L
         messages.append({"role": "user", "content": user_content})
 
         print(f"[Azure Request] model={model_id}, deployment={deployment_name}")
-        response = await azure_client.chat.completions.create(
+        client = get_client_for_model(model_id)
+        response = await client.chat.completions.create(
             model=deployment_name,
             messages=messages,
             max_completion_tokens=4000,
@@ -268,7 +281,8 @@ async def layer2_node(state: GraphState):
             deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{attempt_model.upper()}", attempt_model)
             
             print(f"[Layer 2 Request] model={attempt_model}, deployment={deployment_name}")
-            response = await azure_client.chat.completions.create(
+            client = get_client_for_model(attempt_model)
+            response = await client.chat.completions.create(
                 model=deployment_name,
                 messages=messages,
                 max_completion_tokens=4000,
