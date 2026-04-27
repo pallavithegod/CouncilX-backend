@@ -186,6 +186,35 @@ WEB RESEARCH:
         "status": "Tier 1 deliberations finished."
     }
 
+async def reward_scoring_node(state: GraphState):
+    print("--- Executing Reward Scoring (RLHF) ---")
+    from reward_model import get_reward_score
+    
+    l1_responses = state.get("l1_responses", [])
+    if not l1_responses:
+        return {"status": "No Layer 1 responses to score."}
+        
+    scored_responses = []
+    best_score = -1
+    best_model = ""
+    
+    for r in l1_responses:
+        # Score the response based on the trained DPO policy
+        score = get_reward_score(state["question"], r.response)
+        r.clarity_score = score # Using clarity_score field for the RL reward for now
+        
+        if score > best_score:
+            best_score = score
+            best_model = r.model_id
+            
+        scored_responses.append(r)
+        print(f"[Reward Model] Scored {r.model_id}: {score}")
+
+    return {
+        "l1_responses": scored_responses,
+        "status": f"Reward scoring complete. Top performer: {best_model} ({best_score})"
+    }
+
 
 async def layer2_node(state: GraphState):
     print(f"--- Executing Layer 2 (Iteration {state.get('iterations', 1)}) ---")
@@ -195,17 +224,18 @@ async def layer2_node(state: GraphState):
     if state.get("web_context"):
         aggregation_context += f"**Web Research:**\n{state['web_context']}\n\n"
         
-    aggregation_context += "**Layer 1 Deliberations:**\n"
+    aggregation_context += "**Layer 1 Deliberations (with Peer-Review Reward Scores):**\n"
     l1_resps = state.get('l1_responses') or []
     for r in l1_resps:
         model_name = r.model_name if hasattr(r, 'model_name') else r.get('model_name', 'Model')
         response_text = r.response if hasattr(r, 'response') else r.get('response', '')
-        aggregation_context += f"--- {model_name} ---\n{response_text}\n\n"
+        reward_score = r.clarity_score if hasattr(r, 'clarity_score') else 0.5
+        aggregation_context += f"--- {model_name} (Reward Score: {reward_score}) ---\n{response_text}\n\n"
     
     if state.get("feedback"):
         aggregation_context += f"**Previous Critique/Feedback:** {state['feedback']}\n\n"
 
-    aggregation_context += "Provide a final synthesis grounded in the forensic context and Layer 1 perspectives."
+    aggregation_context += "Provide a final synthesis grounded in the forensic context and Layer 1 perspectives. High reward scores indicate that a perspective is particularly aligned with the Council's neutrality policy."
     
     current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     sys_prompt = f"""You are the Final Arbiter of the AI Parliament. 
@@ -214,7 +244,7 @@ async def layer2_node(state: GraphState):
     Your task is to synthesize the deliberations into a definitive, and comprehensive verdict.
     
     CRITICAL RULES:
-    1. NEVER mention "Layer 1", "Models", "Deliberators", "Arbiter" or any internal system jargon.
+    1. NEVER mention "Layer 1", "Models", "Deliberators", "Arbiter", "Scores" or any internal system jargon.
     2. Provide a unified, professional response as if you are a single objective authority.
     3. Use a clear, structured layout with bold headings and bullet points (Grok-style).
     4. Ensure you explicitly reference the current status (the year {current_date[:4]}) to provide the most up-to-date answer.
@@ -223,76 +253,88 @@ async def layer2_node(state: GraphState):
     
     Provide a detailed and definitive answer grounded in the forensic and web research data."""
     
-    try:
-        deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{state['model_l2'].upper()}", state['model_l2'])
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": aggregation_context}
-        ]
-        
-        print(f"[Layer 2 Request] model={state['model_l2']}, deployment={deployment_name}")
-        response = await azure_client.chat.completions.create(
-            model=deployment_name,
-            messages=messages,
-            max_completion_tokens=4000,
-            temperature=0.4,
-        )
-        response_text = response.choices[0].message.content or ""
-        print(f"[Layer 2 Response] length={len(response_text)}")
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": aggregation_context}
+    ]
 
-        
-        bias, neutral, confidence, feedback = 0.5, 0.5, 0.5, ""
-        import re
-        # Flexible regex for l2 scores
-        match = re.search(r"\[SCORES:.*?bias=([\d.]+).*?neutrality=([\d.]+).*?confidence=([\d.]+).*?feedback=(.*?)\]", response_text, re.IGNORECASE | re.DOTALL)
-        if match:
-            bias = float(match.group(1))
-            neutral = float(match.group(2))
-            confidence = float(match.group(3))
-            feedback = match.group(4).strip()
-            response_text = re.sub(r"\[SCORES:.*?\]", "", response_text, flags=re.IGNORECASE | re.DOTALL).strip()
+    # Try the selected L2 model first, then fallback to GPT if it fails
+    models_to_try = [state['model_l2']]
+    if state['model_l2'].lower() != "gpt":
+        models_to_try.append("gpt")  # Always have GPT as a safety net
 
-        
-        needs_reconsideration = False
-        if state.get("iterations", 1) < 2:
-            if bias > 0.6 or confidence < 0.7:
-                needs_reconsideration = True
-                if not feedback or feedback.lower() == "none":
-                    feedback = "Re-evaluate based on suspected bias or low confidence."
+    for attempt_model in models_to_try:
+        try:
+            deployment_name = os.getenv(f"AZURE_DEPLOYMENT_{attempt_model.upper()}", attempt_model)
+            
+            print(f"[Layer 2 Request] model={attempt_model}, deployment={deployment_name}")
+            response = await azure_client.chat.completions.create(
+                model=deployment_name,
+                messages=messages,
+                max_completion_tokens=4000,
+                temperature=0.4,
+            )
+            response_text = response.choices[0].message.content or ""
+            print(f"[Layer 2 Response] model={attempt_model}, length={len(response_text)}")
 
-        l2_resp = ModelResponse(
-            model_id=state['model_l2'],
-            model_name=state['model_l2'].capitalize(),
-            response=response_text,
-            status="success",
-            bias_score=bias,
-            neutrality_score=neutral,
-            clarity_score=confidence,
-            full_prompt=messages
-        )
-        
-        return {
-            "l2_response": l2_resp,
-            "needs_reconsideration": needs_reconsideration,
-            "feedback": feedback,
-            "confidence": confidence * 100,
-            "status": "Consensus reached." if not needs_reconsideration else "Re-deliberation triggered."
-        }
-    except Exception as e:
-        error_msg = f"[Layer 2 Error] {str(e)}"
-        print(error_msg)
-        return {
-            "l2_response": ModelResponse(
-                model_id=state.get('model_l2', 'unknown'),
-                model_name="Error",
-                response=error_msg,
-                status="error",
-                full_prompt=messages if 'messages' in locals() else []
-            ),
-            "needs_reconsideration": False,
-            "feedback": str(e),
-            "confidence": 0
-        }
+            
+            bias, neutral, confidence, feedback = 0.5, 0.5, 0.5, ""
+            import re
+            match = re.search(r"\[SCORES:.*?bias=([\d.]+).*?neutrality=([\d.]+).*?confidence=([\d.]+).*?feedback=(.*?)\]", response_text, re.IGNORECASE | re.DOTALL)
+            if match:
+                bias = float(match.group(1))
+                neutral = float(match.group(2))
+                confidence = float(match.group(3))
+                feedback = match.group(4).strip()
+                response_text = re.sub(r"\[SCORES:.*?\]", "", response_text, flags=re.IGNORECASE | re.DOTALL).strip()
+
+            
+            needs_reconsideration = False
+            if state.get("iterations", 1) < 2:
+                if bias > 0.6 or confidence < 0.7:
+                    needs_reconsideration = True
+                    if not feedback or feedback.lower() == "none":
+                        feedback = "Re-evaluate based on suspected bias or low confidence."
+
+            l2_resp = ModelResponse(
+                model_id=attempt_model,
+                model_name=attempt_model.capitalize(),
+                response=response_text,
+                status="success",
+                bias_score=bias,
+                neutrality_score=neutral,
+                clarity_score=confidence,
+                full_prompt=messages
+            )
+            
+            if attempt_model != state['model_l2']:
+                print(f"[Layer 2 Fallback] Primary model '{state['model_l2']}' failed. Used '{attempt_model}' instead.")
+
+            return {
+                "l2_response": l2_resp,
+                "needs_reconsideration": needs_reconsideration,
+                "feedback": feedback,
+                "confidence": confidence * 100,
+                "status": "Consensus reached." if not needs_reconsideration else "Re-deliberation triggered."
+            }
+        except Exception as e:
+            print(f"[Layer 2 Error with {attempt_model}] {str(e)}")
+            if attempt_model != models_to_try[-1]:
+                print(f"[Layer 2] Retrying with fallback model...")
+                continue  # Try next model
+            # All models failed
+            return {
+                "l2_response": ModelResponse(
+                    model_id=state.get('model_l2', 'unknown'),
+                    model_name="Error",
+                    response=f"Council Error: All arbiter models failed. Last error: {str(e)}",
+                    status="error",
+                    full_prompt=messages
+                ),
+                "needs_reconsideration": False,
+                "feedback": str(e),
+                "confidence": 0
+            }
 
 def should_continue(state: GraphState):
     if state.get("needs_reconsideration"):
@@ -303,12 +345,14 @@ workflow = StateGraph(GraphState)
 workflow.add_node("retrieval_node", retrieval_node)
 workflow.add_node("web_research_node", web_research_node)
 workflow.add_node("layer1_node", layer1_node)
+workflow.add_node("reward_scoring_node", reward_scoring_node)
 workflow.add_node("layer2_node", layer2_node)
 
 workflow.set_entry_point("retrieval_node")
 workflow.add_edge("retrieval_node", "web_research_node")
 workflow.add_edge("web_research_node", "layer1_node")
-workflow.add_edge("layer1_node", "layer2_node")
+workflow.add_edge("layer1_node", "reward_scoring_node")
+workflow.add_edge("reward_scoring_node", "layer2_node")
 workflow.add_conditional_edges("layer2_node", should_continue, {"layer1_node": "layer1_node", END: END})
 
 app_graph = workflow.compile()
